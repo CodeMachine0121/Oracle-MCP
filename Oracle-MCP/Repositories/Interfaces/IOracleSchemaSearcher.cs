@@ -4,7 +4,7 @@ using Oracle_MCP.Models;
 
 namespace Oracle;
 
-internal interface IOracleSchemaSearcher
+public interface IOracleSchemaSearcher
 {
     Task ReadSchemaTableHitsAsync(
         DbConnection connection,

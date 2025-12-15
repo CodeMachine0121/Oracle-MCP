@@ -18,7 +18,22 @@ public class OracleDataMapper : IOracleDataMapper
         return columns;
     }
 
-    public string? SafeGetDataTypeName(DbDataReader reader, int ordinal)
+    public IReadOnlyDictionary<string, object?> ReadRow(DbDataReader reader, IReadOnlyList<OracleColumnInfo> columns)
+    {
+        var row = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+        for (int i = 0; i < columns.Count; i++)
+        {
+            string name = columns[i].Name;
+            object? value = reader.IsDBNull(i)
+                ? null
+                : CoerceToJsonSafe(reader.GetValue(i));
+            row[name] = value;
+        }
+
+        return row;
+    }
+
+    private string? SafeGetDataTypeName(DbDataReader reader, int ordinal)
     {
         try
         {
@@ -30,20 +45,7 @@ public class OracleDataMapper : IOracleDataMapper
         }
     }
 
-    public IReadOnlyDictionary<string, object?> ReadRow(DbDataReader reader, IReadOnlyList<OracleColumnInfo> columns)
-    {
-        var row = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
-        for (int i = 0; i < columns.Count; i++)
-        {
-            string name = columns[i].Name;
-            object? value = reader.IsDBNull(i) ? null : CoerceToJsonSafe(reader.GetValue(i));
-            row[name] = value;
-        }
-
-        return row;
-    }
-
-    public object? CoerceToJsonSafe(object value)
+    private object? CoerceToJsonSafe(object value)
     {
         return value switch
         {

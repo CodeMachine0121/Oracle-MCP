@@ -4,7 +4,7 @@ using Oracle_MCP.Models;
 
 namespace Oracle;
 
-internal interface IOracleDbConnectionFactory
+public interface IOracleDbConnectionFactory
 {
     OracleToolResponse<DbConnection> Create(OracleConnectionOptions options);
 }

@@ -7,24 +7,13 @@ using Oracle;
 
 namespace Oracle_MCP.Services;
 
-public sealed class OracleDbService : IOracleDbService
+public class OracleDbService(
+    IOracleDbConnectionFactory connectionFactory,
+    IOracleDatabaseInfoRepository databaseInfoRepository,
+    IOracleDataMapper dataMapper,
+    IOracleSchemaSearcher schemaSearcher)
+    : IOracleDbService
 {
-    private readonly IOracleDbConnectionFactory _connectionFactory;
-    private readonly IOracleDatabaseInfoRepository _databaseInfoRepository;
-    private readonly IOracleDataMapper _dataMapper;
-    private readonly IOracleSchemaSearcher _schemaSearcher;
-
-    internal OracleDbService(
-        IOracleDbConnectionFactory connectionFactory,
-        IOracleDatabaseInfoRepository databaseInfoRepository,
-        IOracleDataMapper dataMapper,
-        IOracleSchemaSearcher schemaSearcher)
-    {
-        _connectionFactory = connectionFactory;
-        _databaseInfoRepository = databaseInfoRepository;
-        _dataMapper = dataMapper;
-        _schemaSearcher = schemaSearcher;
-    }
 
     public async Task<OracleToolResponse<OraclePingResult>> PingAsync(CancellationToken cancellationToken)
     {
@@ -34,7 +23,7 @@ public sealed class OracleDbService : IOracleDbService
             return OracleToolResponse<OraclePingResult>.Fail(optionsResponse.Error!);
         }
 
-        var connectionResponse = _connectionFactory.Create(optionsResponse.Result);
+        var connectionResponse = connectionFactory.Create(optionsResponse.Result);
         if (!connectionResponse.Ok || connectionResponse.Result is null)
         {
             return OracleToolResponse<OraclePingResult>.Fail(connectionResponse.Error!);
@@ -45,7 +34,7 @@ public sealed class OracleDbService : IOracleDbService
         {
             await connection.OpenAsync(cancellationToken);
 
-            string? dbInfo = await _databaseInfoRepository.TryGetDatabaseInfoAsync(connection, optionsResponse.Result, cancellationToken);
+            string? dbInfo = await databaseInfoRepository.TryGetDatabaseInfoAsync(connection, optionsResponse.Result, cancellationToken);
             return OracleToolResponse<OraclePingResult>.Success(new OraclePingResult(true, dbInfo));
         }
         catch (Exception ex)
@@ -72,7 +61,7 @@ public sealed class OracleDbService : IOracleDbService
         int effectiveMaxRows = OracleSqlGuard.ClampMaxRows(request.MaxRows ?? optionsResponse.Result.DefaultMaxRows, optionsResponse.Result.MaxMaxRows);
         string wrappedSql = OracleSqlGuard.WrapWithRowNumLimit(request.Sql);
 
-        var connectionResponse = _connectionFactory.Create(optionsResponse.Result);
+        var connectionResponse = connectionFactory.Create(optionsResponse.Result);
         if (!connectionResponse.Ok || connectionResponse.Result is null)
             return OracleToolResponse<OracleQueryResult>.Fail(connectionResponse.Error!);
 
@@ -96,12 +85,12 @@ public sealed class OracleDbService : IOracleDbService
             OracleCommandParameterBinder.AddParameter(command, "mcp_max_rows", effectiveMaxRows);
 
             await using var reader = await command.ExecuteReaderAsync(CommandBehavior.SequentialAccess, cancellationToken);
-            var columns = _dataMapper.ReadColumns(reader);
+            var columns = dataMapper.ReadColumns(reader);
 
             var rows = new List<IReadOnlyDictionary<string, object?>>();
             while (await reader.ReadAsync(cancellationToken))
             {
-                rows.Add(_dataMapper.ReadRow(reader, columns));
+                rows.Add(dataMapper.ReadRow(reader, columns));
             }
 
             return OracleToolResponse<OracleQueryResult>.Success(new OracleQueryResult(
@@ -132,7 +121,7 @@ public sealed class OracleDbService : IOracleDbService
             ? null
             : request.Owner.Trim().ToUpperInvariant();
 
-        var connectionResponse = _connectionFactory.Create(optionsResponse.Result);
+        var connectionResponse = connectionFactory.Create(optionsResponse.Result);
         if (!connectionResponse.Ok || connectionResponse.Result is null)
             return OracleToolResponse<OracleSchemaSearchResult>.Fail(connectionResponse.Error!);
 
@@ -142,10 +131,10 @@ public sealed class OracleDbService : IOracleDbService
             await connection.OpenAsync(cancellationToken);
 
             var hits = new List<OracleSchemaHit>(effectiveMaxHits);
-            await _schemaSearcher.ReadSchemaTableHitsAsync(connection, optionsResponse.Result, normalizedKeyword, normalizedOwner, effectiveMaxHits, hits, cancellationToken);
+            await schemaSearcher.ReadSchemaTableHitsAsync(connection, optionsResponse.Result, normalizedKeyword, normalizedOwner, effectiveMaxHits, hits, cancellationToken);
             if (hits.Count < effectiveMaxHits)
             {
-                await _schemaSearcher.ReadSchemaColumnHitsAsync(connection, optionsResponse.Result, normalizedKeyword, normalizedOwner, effectiveMaxHits - hits.Count, hits,
+                await schemaSearcher.ReadSchemaColumnHitsAsync(connection, optionsResponse.Result, normalizedKeyword, normalizedOwner, effectiveMaxHits - hits.Count, hits,
                     cancellationToken);
             }
 
