@@ -1,0 +1,49 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json",
+  "description": "Oracle DB searching MCP server (read-only query + schema search).",
+  "name": "io.github.CodeMachine0121/oracle-mcp",
+  "version": "0.1.0-beta",
+  "packages": [
+    {
+      "registryType": "nuget",
+      "identifier": "<your package ID here>",
+      "version": "0.1.0-beta",
+      "transport": {
+        "type": "http",
+        "url": "http://localhost:3001"
+      },
+      "packageArguments": [],
+      "environmentVariables": [
+        {
+          "name": "MCP_HTTP_URL",
+          "description": "HTTP binding URL for the MCP server (default: http://0.0.0.0:3001).",
+          "required": false
+        },
+        {
+          "name": "ORACLE_CONNECTION_STRING",
+          "description": "Oracle connection string used by the MCP server (recommended to use a read-only DB user).",
+          "required": true
+        },
+        {
+          "name": "ORACLE_COMMAND_TIMEOUT_SECONDS",
+          "description": "Command timeout in seconds (default: 30).",
+          "required": false
+        },
+        {
+          "name": "ORACLE_DEFAULT_MAX_ROWS",
+          "description": "Default max rows returned by oracle_query (default: 200).",
+          "required": false
+        },
+        {
+          "name": "ORACLE_MAX_MAX_ROWS",
+          "description": "Hard upper bound for max_rows (default: 2000).",
+          "required": false
+        }
+      ]
+    }
+  ],
+  "repository": {
+    "url": "https://github.com/<your GitHub username here>/<your repo name>",
+    "source": "github"
+  }
+}
