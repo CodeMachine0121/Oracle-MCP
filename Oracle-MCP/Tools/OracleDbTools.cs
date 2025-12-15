@@ -7,25 +7,19 @@ using ModelContextProtocol.Server;
 using Oracle_MCP.Models;
 using Oracle_MCP.Services;
 
+using Oracle;
+
 namespace Oracle_MCP.Tools;
 
-internal sealed class OracleDbTools
+internal sealed class OracleDbTools(IOracleDbService oracleDbService, ILogger<OracleDbTools> logger)
 {
-    private readonly IOracleDbService _oracleDbService;
-    private readonly ILogger<OracleDbTools> _logger;
-
-    public OracleDbTools(IOracleDbService oracleDbService, ILogger<OracleDbTools> logger)
-    {
-        _oracleDbService = oracleDbService;
-        _logger = logger;
-    }
 
     [McpServerTool]
     [Description("Checks Oracle database connectivity using ORACLE_CONNECTION_STRING.")]
     public async Task<OracleToolResponse<OraclePingResult>> OraclePing()
     {
-        _logger.LogTrace("oracle_ping invoked");
-        return await _oracleDbService.PingAsync(CancellationToken.None);
+        logger.LogTrace("oracle_ping invoked");
+        return await oracleDbService.PingAsync(CancellationToken.None);
     }
 
     [McpServerTool]
@@ -38,8 +32,9 @@ internal sealed class OracleDbTools
         [Description("Maximum rows to return (defaults to ORACLE_DEFAULT_MAX_ROWS).")]
         int? max_rows = null)
     {
-        _logger.LogTrace("oracle_query invoked");
-        return await _oracleDbService.QueryAsync(sql, parameters, max_rows, CancellationToken.None);
+        logger.LogTrace("oracle_query invoked");
+        var request = new OracleQueryRequest(sql, parameters, max_rows);
+        return await oracleDbService.QueryAsync(request, CancellationToken.None);
     }
 
     [McpServerTool]
@@ -52,8 +47,8 @@ internal sealed class OracleDbTools
         [Description("Maximum hits to return (default 50, max 200).")]
         int? max_hits = null)
     {
-        _logger.LogTrace("oracle_search_schema invoked");
-        return await _oracleDbService.SearchSchemaAsync(keyword, owner, max_hits, CancellationToken.None);
+        logger.LogTrace("oracle_search_schema invoked");
+        var request = new OracleSchemaSearchRequest(keyword, owner, max_hits);
+        return await oracleDbService.SearchSchemaAsync(request, CancellationToken.None);
     }
 }
-
