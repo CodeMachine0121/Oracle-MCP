@@ -100,3 +100,20 @@ fabric.properties
 !.idea/runConfigurations
 
 # End of https://www.toptal.com/developers/gitignore/api/jetbrains+all,dotnetcore
+
+### Security - Sensitive Files ###
+# 環境變數與敏感設定
+.env
+.env.*
+!.env.example
+
+# Kubernetes secrets（如果有本地測試用的 secret 文件）
+*secret*.yaml
+*secret*.yml
+
+# 其他敏感文件
+*.pem
+*.key
+*.pfx
+*.p12
+credentials.json
