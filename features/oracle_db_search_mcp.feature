@@ -16,14 +16,14 @@ Feature: Oracle DB Searching MCP
   Scenario: 未設定連線字串時回報可理解的錯誤
     Given 未設定 ORACLE_CONNECTION_STRING 環境變數
     When 呼叫 oracle_ping
-    Then 回傳錯誤碼為 missing_connection_string
+    Then 回傳失敗狀態（ok = false）
     And 錯誤訊息指示需設定 ORACLE_CONNECTION_STRING
 
   Scenario: 未安裝/無法載入 Oracle driver 時回報可理解的錯誤
     Given 設定了 ORACLE_CONNECTION_STRING 環境變數
     And 執行環境無法載入 Oracle .NET driver（Oracle.ManagedDataAccess）
     When 呼叫 oracle_ping
-    Then 回傳錯誤碼為 missing_oracle_driver
+    Then 回傳失敗狀態（ok = false）
     And 錯誤訊息指示需安裝 Oracle.ManagedDataAccess（或相容 driver）
 
   Scenario: 執行 SELECT 查詢並以 max_rows 限制結果
@@ -45,7 +45,8 @@ Feature: Oracle DB Searching MCP
   Scenario: 拒絕非唯讀 SQL（DML/DDL/PLSQL）
     Given 設定了 ORACLE_CONNECTION_STRING 環境變數
     When 呼叫 oracle_query 並提供 sql 為 "delete from SOME_TABLE"
-    Then 回傳錯誤碼為 non_readonly_sql
+    Then 回傳失敗狀態（ok = false）
+    And 錯誤訊息指示僅允許唯讀 SQL
     And 不應對資料庫造成任何變更
 
   Scenario: schema 搜尋可找到符合關鍵字的表與欄位
@@ -59,5 +60,5 @@ Feature: Oracle DB Searching MCP
     Given 設定了 ORACLE_CONNECTION_STRING 環境變數
     And 執行環境可載入 Oracle .NET driver（Oracle.ManagedDataAccess）
     When 呼叫 oracle_query 並提供 sql 為 "select * from"
-    Then 回傳錯誤碼為 query_failed
+    Then 回傳失敗狀態（ok = false）
     And 錯誤訊息包含 Oracle 錯誤摘要（不包含連線字串）

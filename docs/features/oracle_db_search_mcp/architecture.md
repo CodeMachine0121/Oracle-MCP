@@ -1,12 +1,19 @@
 # Oracle DB Searching MCP - 架構設計
 
 ## 1. 專案上下文
-- 語言/框架：C# / .NET 8（Console App）
-- 通訊協定：MCP（Model Context Protocol）/ stdio transport
-- 架構模式：以「Tools（MCP 對外介面）」呼叫「Service（商業邏輯/資料存取）」；以「Models（資料模型）」承載輸入/輸出
+- 語言/框架：C# / .NET 8（ASP.NET Core Web App）
+- 通訊協定：MCP（Model Context Protocol）/ HTTP transport
+- 架構模式：Clean Architecture / Onion Architecture
+  - **Tools Layer**：MCP 對外介面（使用 [McpServerTool] 屬性）
+  - **Services Layer**：商業邏輯協調與編排
+  - **Repositories Layer**：資料存取抽象（DatabaseInfo, SchemaSearch, DataMapper）
+  - **Factories Layer**：物件建立（DbConnection）
+  - **Utilities Layer**：橫切關注點（SQL Guard, Parameter Binding, Error Formatting）
+  - **Models Layer**：資料模型（Requests, Results, Infrastructure）
 - 命名慣例：PascalCase 類別/方法；檔案名稱與類別名稱一致；工具方法以 `oracle_*` 命名（對外）
+- 依賴注入：使用 ASP.NET Core DI 容器管理所有服務生命週期
 - 重要限制：
-  - stdout 需保留給 MCP 訊息；Log 走 stderr（專案既有設定）
+  - Log 走 stderr（專案既有設定）
   - 本功能以「查詢/搜尋」為主，預設禁止任何寫入/DDL/PLSQL
 
 ## 2. 功能概述
@@ -17,78 +24,167 @@
 
 ## 3. 資料模型
 
-### 3.1 列舉/常數
-- `OracleMcpErrorCodes`（字串常數，便於 agent 穩定比對）
-  - `missing_connection_string`
-  - `missing_oracle_driver`
-  - `non_readonly_sql`
-  - `query_failed`
-
-### 3.2 核心實體
-- `OracleConnectionOptions`
-  - `connectionString`: string（來源：環境變數 `ORACLE_CONNECTION_STRING`）
-  - `commandTimeoutSeconds`: int（來源：環境變數 `ORACLE_COMMAND_TIMEOUT_SECONDS`，預設 30）
-  - `defaultMaxRows`: int（來源：環境變數 `ORACLE_DEFAULT_MAX_ROWS`，預設 200）
-  - `maxMaxRows`: int（來源：環境變數 `ORACLE_MAX_MAX_ROWS`，預設 2000；用於上限保護）
-
-- `OraclePingResult`
-  - `ok`: bool
-  - `databaseInfo`: string?（可選，例如版本、service name；取不到則為空）
-
-- `OracleColumnInfo`
-  - `name`: string
-  - `dbType`: string?（資料庫回報的型別字串）
-
-- `OracleQueryResult`
-  - `columns`: OracleColumnInfo[]
-  - `rows`: object[]（每列以「欄位名 → 值」的 map/JSON object 表示）
-  - `truncated`: bool（是否因 max_rows 被截斷/限制）
-
-- `OracleSchemaHit`
-  - `owner`: string
-  - `tableName`: string
-  - `columnName`: string?（表層級命中時為空）
-  - `dataType`: string?（欄位命中時可填）
-  - `matchType`: string（`table` / `column`）
-
-- `OracleSchemaSearchResult`
-  - `hits`: OracleSchemaHit[]
+### 3.1 Infrastructure Models（基礎設施模型）
+- `OracleToolResponse<T>`（泛型回應封裝）
+  - `ok`: bool（操作是否成功）
+  - `result`: T?（成功時的結果）
+  - `error`: OracleToolError?（失敗時的錯誤資訊）
+  - 靜態方法：`Success(T result)`, `Fail(OracleToolError error)`
 
 - `OracleToolError`
-  - `code`: OracleMcpErrorCode
-  - `message`: string（對 agent 友善，可直接採取行動）
-  - `details`: string?（可選，提供除錯摘要；不得包含連線字串/密碼）
+  - `message`: string（對 agent 友善的錯誤訊息）
+  - `details`: string?（可選，除錯摘要；不包含敏感資訊）
 
-> 回傳格式建議：工具方法以「成功回傳 result；失敗拋出可被 MCP SDK 轉譯的例外」或「以統一結果物件封裝 ok/error」二擇一；本專案採用「統一結果物件」以利 agent 一致解析。
+- `OracleConnectionOptions`
+  - `ConnectionString`: string（來源：環境變數 `ORACLE_CONNECTION_STRING`）
+  - `CommandTimeoutSeconds`: int（來源：環境變數 `ORACLE_COMMAND_TIMEOUT_SECONDS`，預設 30）
+  - `DefaultMaxRows`: int（來源：環境變數 `ORACLE_DEFAULT_MAX_ROWS`，預設 200）
+  - `MaxMaxRows`: int（來源：環境變數 `ORACLE_MAX_MAX_ROWS`，預設 2000）
+  - 靜態方法：`FromEnvironment()` → `OracleToolResponse<OracleConnectionOptions>`
 
-## 4. 服務介面
+### 3.2 Request Models（請求模型）
+- `OraclePingRequest`（目前為空，保留擴充性）
 
-### 4.1 介面（語言無關描述）
-- `Ping(options) -> OraclePingResult 或 OracleToolError`
-  - 規則：
-    - 必須先檢查 `ORACLE_CONNECTION_STRING` 是否存在
-    - 必須確認 Oracle driver 可被載入
-    - 以最小成本執行簡單查詢（例如 `select 1 from dual`）驗證可連線
+- `OracleQueryRequest`
+  - `Sql`: string（唯讀 SQL 語句）
+  - `Parameters`: Dictionary<string, object?>?（bind 參數）
+  - `MaxRows`: int?（最大回傳列數）
 
-- `Query(options, sql, parameters?, maxRows?) -> OracleQueryResult 或 OracleToolError`
-  - 規則：
-    - 僅允許唯讀 SQL：開頭必須是 `SELECT` 或 `WITH`（忽略註解/空白）
-    - 若偵測到 DML/DDL/PLSQL 相關關鍵字，必須拒絕（回 `non_readonly_sql`）
-    - `maxRows` 需套用上限保護（<= `maxMaxRows`），缺省使用 `defaultMaxRows`
-    - bind 參數以 key/value map 傳入，透過 driver 參數化避免字串拼接
-    - 結果需提供欄位資訊與列資料；資料型別需能安全序列化為 JSON（必要時轉字串/base64）
+- `OracleSchemaSearchRequest`
+  - `Keyword`: string（搜尋關鍵字）
+  - `Owner`: string?（可選的 schema/owner 過濾）
+  - `MaxHits`: int?（最大命中數）
 
-- `SearchSchema(options, keyword, owner?, maxHits?) -> OracleSchemaSearchResult 或 OracleToolError`
-  - 規則：
-    - `keyword` 不可為空；過短可直接回空或回錯（本專案採回空 hits）
-    - 以 Oracle 資料字典 view 進行搜尋（例如 `ALL_TABLES`、`ALL_TAB_COLUMNS`）
-    - 需限制回傳數量（例如預設 50，上限 200）
+### 3.3 Result Models（結果模型）
+- `OraclePingResult`
+  - `Ok`: bool（連線是否成功）
+  - `DatabaseInfo`: string?（資料庫資訊，例如 DB_NAME）
+
+- `OracleColumnInfo`
+  - `Name`: string（欄位名稱）
+  - `DbType`: string?（資料庫型別字串）
+
+- `OracleQueryResult`
+  - `Columns`: OracleColumnInfo[]（欄位資訊）
+  - `Rows`: IReadOnlyDictionary<string, object?>[]（資料列）
+  - `Truncated`: bool（是否因 max_rows 限制而截斷）
+
+- `OracleSchemaHit`
+  - `Owner`: string（schema 擁有者）
+  - `TableName`: string（表名稱）
+  - `ColumnName`: string?（欄位名稱，表層級搜尋時為 null）
+  - `DataType`: string?（欄位型別，表層級搜尋時為 null）
+  - `MatchType`: string（`"table"` 或 `"column"`）
+
+- `OracleSchemaSearchResult`
+  - `Hits`: OracleSchemaHit[]（搜尋結果）
+
+## 4. 分層架構設計
+
+### 4.1 Tools Layer（MCP 介面層）
+**職責**：暴露 MCP 工具給 agent，處理參數轉換
+- **OracleDbTools**
+  - `OraclePing()` → `OracleToolResponse<OraclePingResult>`
+  - `OracleQuery(sql, parameters?, max_rows?)` → `OracleToolResponse<OracleQueryResult>`
+  - `OracleSearchSchema(keyword, owner?, max_hits?)` → `OracleToolResponse<OracleSchemaSearchResult>`
+  - 依賴：`IOracleDbService`
+
+### 4.2 Services Layer（服務協調層）
+**職責**：編排業務邏輯，協調多個 repositories 和 factories
+
+#### 4.2.1 IOracleDbService
+- `PingAsync(cancellationToken)` → `OracleToolResponse<OraclePingResult>`
+  - 檢查環境變數與 driver
+  - 委派 `IOracleDbConnectionFactory` 建立連線
+  - 委派 `IOracleDatabaseInfoRepository` 取得 DB 資訊
+
+- `QueryAsync(request, cancellationToken)` → `OracleToolResponse<OracleQueryResult>`
+  - 檢查環境變數
+  - 使用 `OracleSqlGuard` 驗證 SQL 唯讀性
+  - 委派 `IOracleDbConnectionFactory` 建立連線
+  - 使用 `OracleCommandParameterBinder` 綁定參數
+  - 委派 `IOracleDataMapper` 映射資料
+
+- `SearchSchemaAsync(request, cancellationToken)` → `OracleToolResponse<OracleSchemaSearchResult>`
+  - 檢查環境變數與關鍵字
+  - 委派 `IOracleDbConnectionFactory` 建立連線
+  - 委派 `IOracleSchemaSearcher` 搜尋 schema
+
+#### 4.2.2 IOracleDataMapper
+- `ReadColumns(reader)` → `IReadOnlyList<OracleColumnInfo>`
+- `ReadRow(reader, columns)` → `IReadOnlyDictionary<string, object?>`
+  - 將 Oracle 型別轉為 JSON-safe 型別（DateTime → ISO-8601, byte[] → base64）
+
+### 4.3 Repositories Layer（資料存取層）
+**職責**：封裝資料庫查詢邏輯
+
+#### 4.3.1 IOracleDatabaseInfoRepository
+- `TryGetDatabaseInfoAsync(connection, options, cancellationToken)` → `string?`
+  - 查詢 `sys_context('userenv','db_name')`
+
+#### 4.3.2 IOracleSchemaSearcher
+- `ReadSchemaTableHitsAsync(connection, options, keyword, owner, maxHits, hits, cancellationToken)`
+  - 查詢 `ALL_TABLES`，以 `table_name LIKE '%keyword%'` 搜尋
+- `ReadSchemaColumnHitsAsync(connection, options, keyword, owner, maxHits, hits, cancellationToken)`
+  - 查詢 `ALL_TAB_COLUMNS`，以 `column_name LIKE '%keyword%'` 或 `table_name LIKE '%keyword%'` 搜尋
+
+### 4.4 Factories Layer（工廠層）
+**職責**：建立與驗證資料庫連線物件
+
+#### 4.4.1 IOracleDbConnectionFactory
+- `Create(options)` → `OracleToolResponse<DbConnection>`
+  - 動態載入 `Oracle.ManagedDataAccess.Client.OracleConnection`
+  - 使用反射建立連線物件（避免硬綁定 Oracle 套件）
+
+### 4.5 Utilities Layer（工具層）
+**職責**：提供橫切關注點功能
+
+#### 4.5.1 OracleSqlGuard（靜態類別）
+- `IsReadonlySql(sql, out reason)` → `bool`
+  - 驗證 SQL 必須以 `SELECT` 或 `WITH` 開頭
+  - 偵測危險關鍵字（INSERT/UPDATE/DELETE/DROP/ALTER/...）
+  - 偵測 `FOR UPDATE` 子句
+  - 移除註解與字串常值後進行檢查
+- `WrapWithRowNumLimit(sql)` → `string`
+  - 包裝為 `select * from (原SQL) where rownum <= :mcp_max_rows`
+- `ClampMaxRows(value, max)` → `int`
+  - 限制 max_rows 範圍為 1 ~ max
+
+#### 4.5.2 OracleCommandParameterBinder（靜態類別）
+- `AddParameter(command, name, value)`
+  - 建立 `DbParameter` 並加入 command
+  - 處理 `:` 前綴與 null 值
+
+#### 4.5.3 OracleErrorFormatter（靜態類別）
+- `SanitizeExceptionMessage(ex)` → `string`
+  - 清理例外訊息，避免洩漏連線字串
 
 ## 5. 架構決策
-- 唯讀保護：以 SQL 字串檢查與工具層限制，降低 agent 誤執行寫入的風險（仍建議 DB 使用唯讀帳號）
-- 連線設定以環境變數輸入：避免把敏感資訊寫入 repo；也符合 MCP server 配置的常見模式
-- driver 載入策略：採「反射/動態載入」避免在此模板專案中硬綁 Oracle 套件，降低建置/發佈時的外部依賴；若環境已提供 `Oracle.ManagedDataAccess` 即可運作
-- 結果序列化：以 JSON 友善型別為主（數字/字串/布林/ISO-8601 時間/base64），避免 MCP client 解析困難
+
+### 5.1 Clean Architecture 原則
+- **依賴方向**：外層依賴內層（Tools → Services → Repositories/Factories）
+- **關注點分離**：每層各司其職
+  - Tools：MCP 介面轉換
+  - Services：業務邏輯編排
+  - Repositories：資料存取
+  - Factories：物件建立
+  - Utilities：橫切關注點
+- **可測試性**：所有層都使用介面，便於單元測試與 mock
+
+### 5.2 技術決策
+- **HTTP Transport**：使用 ASP.NET Core Web App + HTTP transport（而非 stdio），支援標準 web hosting
+- **依賴注入**：使用 ASP.NET Core 內建 DI 容器管理所有服務生命週期
+- **唯讀保護**：多層防護
+  - SQL Guard 驗證語法（拒絕 DML/DDL/PL/SQL）
+  - 建議使用唯讀資料庫帳號
+- **環境變數配置**：避免敏感資訊寫入 repo，符合 MCP server 配置慣例
+- **動態 Driver 載入**：使用反射載入 `Oracle.ManagedDataAccess`，避免硬綁定，降低建置依賴
+- **JSON-Safe 序列化**：`OracleDataMapper` 將所有型別轉為 JSON 友善格式
+  - DateTime → ISO-8601 字串
+  - byte[] → Base64 字串
+  - 其他型別 → 適當的 primitive 或字串
+- **統一錯誤處理**：`OracleToolResponse<T>` 封裝成功/失敗，agent 可一致解析
+- **安全性**：`OracleErrorFormatter` 清理錯誤訊息，避免洩漏連線字串
 
 ## 6. 情境對應
 | 情境 | 模型 | 方法 |
@@ -103,21 +199,54 @@
 | SQL 語法錯誤時回報可理解的錯誤 | OracleToolError(query_failed) | Query |
 
 ## 7. 檔案結構規劃
-以 `Oracle-MCP/` 專案目錄為根（同層已有 `Program.cs`）：
+以 `Oracle-MCP/Oracle-MCP/` 為專案根目錄：
 ```
-Oracle-MCP/
-├── Models/
-│   ├── OracleMcpErrorCodes.cs
-│   ├── OracleToolError.cs
-│   ├── OracleConnectionOptions.cs
-│   ├── OraclePingResult.cs
-│   ├── OracleQueryResult.cs
-│   └── OracleSchemaSearchResult.cs
-├── Services/
-│   ├── IOracleDbService.cs
-│   └── OracleDbService.cs
-├── Tools/
-│   └── OracleDbTools.cs
-├── Program.cs
-└── .mcp/server.json（宣告環境變數輸入）
+Oracle-MCP/Oracle-MCP/
+├── Models/                                    # 資料模型層
+│   ├── OracleConnectionOptions.cs            # 環境變數配置模型
+│   ├── OracleToolResponse.cs                 # 統一回應封裝
+│   ├── OracleToolError.cs                    # 錯誤模型
+│   ├── OraclePingRequest.cs                  # Ping 請求
+│   ├── OraclePingResult.cs                   # Ping 結果
+│   ├── OracleQueryRequest.cs                 # Query 請求
+│   ├── OracleQueryResult.cs                  # Query 結果
+│   ├── OracleSchemaSearchRequest.cs          # Schema 搜尋請求
+│   └── OracleSchemaSearchResult.cs           # Schema 搜尋結果
+│
+├── Tools/                                     # MCP 介面層
+│   └── OracleDbTools.cs                      # MCP 工具定義 (oracle_ping/query/search_schema)
+│
+├── Services/                                  # 服務層
+│   ├── Interfaces/
+│   │   ├── IOracleDbService.cs               # 主服務介面
+│   │   └── IOracleDataMapper.cs              # 資料映射介面
+│   ├── OracleDbService.cs                    # 主服務實作（編排邏輯）
+│   └── OracleDataMapper.cs                   # 資料映射實作（型別轉換）
+│
+├── Repositories/                              # 資料存取層
+│   ├── Interfaces/
+│   │   ├── IOracleDatabaseInfoRepository.cs  # DB 資訊查詢介面
+│   │   └── IOracleSchemaSearcher.cs          # Schema 搜尋介面
+│   ├── OracleDatabaseInfoRepository.cs       # DB 資訊查詢實作
+│   └── OracleSchemaSearchRepository.cs       # Schema 搜尋實作
+│
+├── Factories/                                 # 工廠層
+│   ├── Interfaces/
+│   │   └── IOracleDbConnectionFactory.cs     # 連線工廠介面
+│   └── OracleDbConnectionFactory.cs          # 連線工廠實作（動態載入 driver）
+│
+├── Utilities/                                 # 工具層
+│   ├── OracleSqlGuard.cs                     # SQL 唯讀驗證
+│   ├── OracleCommandParameterBinder.cs       # 參數綁定
+│   └── OracleErrorFormatter.cs               # 錯誤訊息清理
+│
+├── Program.cs                                 # ASP.NET Core 啟動程式（DI 註冊 + MCP 配置）
+├── Oracle-MCP.csproj                          # 專案檔
+└── .mcp/server.json                           # MCP server 設定（環境變數宣告）
 ```
+
+### 7.1 namespace 規劃
+- `Oracle_MCP.Models` - 所有資料模型
+- `Oracle_MCP.Tools` - MCP 工具
+- `Oracle_MCP.Services` - 服務層（包含介面）
+- `Oracle` - Repositories, Factories, Utilities（共用 namespace，便於內部引用）
